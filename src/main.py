@@ -1,5 +1,9 @@
 from constants import *
 from sample import Sample
+from decisionTreeClassifier import DecisionTreeClassifier
+from decisionTreeRegressor import DecisionTreeRegressor
+from randomFlorestClassifier import RandomFlorestClassifier
+from randomFlorestRegressor import RandomFlorestRegressor
 
 from typing import Literal
 import random
@@ -40,6 +44,7 @@ def trainingSet(modelType: Literal["classifier", "regressor"]) -> tuple[list[Sam
 
     return samples, chosenIndexes
 
+# choosenIndexes contain the file indexes/lines used to create the training set
 def testSet(choosenIndexes: set[int], modelType: Literal["classifier", "regressor"]) -> list[Sample]:
     with open(DATA_FILE_PATH, "r") as f:
         samples = []
@@ -48,6 +53,15 @@ def testSet(choosenIndexes: set[int], modelType: Literal["classifier", "regresso
                 samples.append(buildSample(line, modelType))
 
     return samples
-                
+
 if __name__ == "__main__":
-    
+    trainingSamples, chosenIndexes = trainingSet("regressor")
+    testSamples = testSet(chosenIndexes, "regressor")
+
+    tree = DecisionTreeRegressor()
+    tree.buildTree(trainingSamples)
+    print(tree.testTree(testSamples))
+
+    florest = RandomFlorestRegressor()
+    florest.buildFlorest(trainingSamples)
+    print(florest.testFlorest(testSamples))
