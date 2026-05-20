@@ -33,55 +33,50 @@ def buildSample(line: str, modelType: Literal["classifier", "regressor"]) -> Sam
 
 
 def loadAllSamples(modelType: Literal["classifier", "regressor"]) -> list[Sample]:
-    """Carrega todas as amostras do dataset.
+    """Carrega todas as amostras do dataset com feature engineering aplicada
 
     O k-fold cross-validation faz seus próprios splits a partir do conjunto
-    completo
+    completo. A feature engineering é aplicada UMA VEZ aqui como passo de
+    pré-processamento, garantindo que todos os modelos (árvore, floresta, MLP)
+    recebam exatamente as mesmas features 5D — comparação justa.
+
+    Features finais por amostra, transforma o espaço do problema em 5 dimensões ao inves de 3:
+        [qPA, pulso, resp, |pulso-80|, qPA²]
+
+    Justificativa vem da exploração dos dados: pulso atua por desvio do
+    normal (≈80 bpm) e qPA tem efeito quadrático/direcional na gravidade.
     """
     with open(DATA_FILE_PATH, "r") as f:
-        return [buildSample(line, modelType) for line in f]
+        samples = [buildSample(line, modelType) for line in f]
+
+    # Feature engineering uniforme
+    for s in samples:
+        qPA, pulso, resp = s.attributesList
+        s.attributesList = [qPA, pulso, resp, abs(pulso - 80.0), qPA ** 2]
+
+    return samples
 
 
-
-# Helpers do MLP convertem Sample para arrays numpy
-
+# Helpers do MLP — converte Sample para arrays numpy
 
 def samplesToArrays(samples: list[Sample]) -> tuple[np.ndarray, np.ndarray]:
     """Converte lista de Sample para arrays (X, y).
 
-    X tem shape (n, 3) com [qPA, pulso, resp].
+    X tem shape (n, 5) já com feature engineering aplicada (ver loadAllSamples).
     y tem shape (n,) com a saída (gravidade contínua ou classe inteira).
     """
     X = np.array([s.attributesList for s in samples], dtype=float)
     y = np.array([s.output for s in samples], dtype=float)
     return X, y
 
-
-def addEngineeredFeatures(X_raw: np.ndarray) -> np.ndarray:
-    """Adiciona features derivadas |pulso-80| e qPA² às 3 originais.
-
-    Sai de (n, 3) → (n, 5). Justificativa vem da exploração dos dados: pulso
-    atua por desvio do normal (≈80 bpm) e qPA tem efeito quadrático/direcional.
-    """
-    qPA = X_raw[:, 0]
-    pulso = X_raw[:, 1]
-    return np.column_stack([
-        X_raw,
-        np.abs(pulso - 80.0),
-        qPA ** 2,
-    ])
-
-
-
-# K-fold avaliadores todos retornam (mean_MSE, std_MSE) na escala original
+# K-fold avaliadores — todos retornam (mean_MSE, std_MSE) na escala original
 
 def _classesForStratification(allSamples: list[Sample]) -> np.ndarray:
     """Deriva as classes a partir da gravidade real (via threshold 25/50/75)
-    para estratificar os folds, garantindo representação balanceada das 4 classes
+    para estratificar os folds, garantindo representação balanceada das 4 classes.
     """
     y_orig = np.array([s.output for s in allSamples], dtype=float)
     return classe_via_regressao(y_orig)
-
 
 def kFoldDecisionTreeRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[float, float]:
     """K-fold cross-validation do Decision Tree Regressor.
@@ -103,7 +98,6 @@ def kFoldDecisionTreeRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[f
 
     return float(np.mean(fold_mses)), float(np.std(fold_mses))
 
-
 def kFoldRandomForestRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[float, float]:
     """K-fold cross-validation do Random Forest Regressor.
 
@@ -124,7 +118,6 @@ def kFoldRandomForestRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[f
 
     return float(np.mean(fold_mses)), float(np.std(fold_mses))
 
-
 def kFoldMLPRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[float, float]:
     """K-fold cross-validation do MLP Regressor.
 
@@ -133,15 +126,14 @@ def kFoldMLPRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[float, flo
         - 1 saída linear (gravidade contínua)
         - 115 parâmetros — escolhida via ablação de capacidade
 
-    Hiperparâmetros lr=0.05, momentum=0.9, l2_lambda=0.0
+    Hiperparâmetros: lr=0.05, momentum=0.9, l2_lambda=0.0
 
     Returns:
         (mean_MSE, std_MSE) na escala original da gravidade, comparável
-        diretamente com o MSE das árvores
+        diretamente com o MSE das árvores.
     """
-    # Converte samples → arrays + feature engineering
-    X_raw, y_orig = samplesToArrays(allSamples)
-    X = addEngineeredFeatures(X_raw)
+    # Converte samples → arrays (já com FE aplicada em loadAllSamples)
+    X, y_orig = samplesToArrays(allSamples)
     y_orig_2d = y_orig.reshape(-1, 1)
 
     # Normaliza globalmente (pequeno leak aceitável; a classe MLP.cross_validate
@@ -151,7 +143,6 @@ def kFoldMLPRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[float, flo
     X_n = scaler_X.transform(X)
     y_n = scaler_y.transform(y_orig_2d)
 
-    # K-fold via método da classe MLP
     mlp = MLP(
         layer_sizes=[5, 8, 5, 3, 1],
         task="regression",
@@ -166,7 +157,6 @@ def kFoldMLPRegressor(allSamples: list[Sample], cv: int = 5) -> tuple[float, flo
         epochs=400, batch_size=32, patience=30,
         verbose=False,
     )
-
     # Converte MSE da escala normalizada para a original
     #    y_orig - ŷ_orig = (y_norm - ŷ_norm) * range / 2
     #    MSE_orig = MSE_norm * (range / 2)²
@@ -181,6 +171,7 @@ if __name__ == "__main__":
     allSamples = loadAllSamples("regressor")
 
     print(f"K-fold cross-validation (n={len(allSamples)}, 5 folds estratificados)")
+    print(f"Features: [qPA, pulso, resp, |pulso-80|, qPA²]")
     print("=" * 60)
 
     tree_mean, tree_std = kFoldDecisionTreeRegressor(allSamples, cv=5)
