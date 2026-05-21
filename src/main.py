@@ -1,15 +1,13 @@
 from constants import *
 from sample import Sample
-from decisionTreeClassifier import DecisionTreeClassifier
 from decisionTreeRegressor import DecisionTreeRegressor
-from randomFlorestClassifier import RandomFlorestClassifier
 from randomFlorestRegressor import RandomFlorestRegressor
 from mlp import MLP, MinMaxScalerSym, classe_via_regressao
 
 from typing import Literal
 from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import f1_score
 import numpy as np
-
 
 
 # Carregamento e construção das amostras
@@ -75,7 +73,7 @@ def samplesToArrays(samples: list[Sample]) -> tuple[np.ndarray, np.ndarray]:
 # classificador). Isso permite combinar gravidade e classe na mesma linha do CSV.
 
 def _classesForStratification(allSamples_reg: list[Sample]) -> np.ndarray:
-    """Deriva as classes a partir da gravidade real (via threshold 25/50/75)
+    """Deriva as classes a partir da gravidade real
     para estratificar os folds, garantindo representação balanceada das 4 classes.
 
     Recebe sempre samples do regressor (output=gravidade contínua) para que
@@ -112,38 +110,6 @@ def kFoldDecisionTreeRegressor(allSamples_reg: list[Sample], cv: int = 5) -> tup
     return float(np.mean(fold_mses)), float(np.std(fold_mses)), gravidade_oof
 
 
-def kFoldDecisionTreeClassifier(allSamples_cls: list[Sample], allSamples_reg: list[Sample],
-                                 cv: int = 5) -> tuple[float, float, np.ndarray]:
-    """K-fold do Decision Tree Classifier.
-
-    Args:
-        allSamples_cls: Samples com output = classe (int).
-        allSamples_reg: Samples com output = gravidade (float) — usado apenas
-                        para estratificação consistente com os outros k-folds.
-
-    Returns:
-        (mean_acc, std_acc, classe_oof).
-    """
-    y_cls = _classesForStratification(allSamples_reg)
-    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
-
-    fold_accs = []
-    classe_oof = np.zeros(len(allSamples_cls), dtype=int)
-
-    for train_idx, test_idx in skf.split(allSamples_cls, y_cls):
-        train_samples = [allSamples_cls[i] for i in train_idx]
-        test_samples = [allSamples_cls[i] for i in test_idx]
-
-        tree = DecisionTreeClassifier()
-        tree.buildTree(train_samples)
-        fold_accs.append(tree.testTree(test_samples))
-
-        for i, s in zip(test_idx, test_samples):
-            classe_oof[i] = tree.predict(s)
-
-    return float(np.mean(fold_accs)), float(np.std(fold_accs)), classe_oof
-
-
 def kFoldRandomForestRegressor(allSamples_reg: list[Sample], cv: int = 5) -> tuple[float, float, np.ndarray]:
     """K-fold do Random Forest Regressor.
 
@@ -170,35 +136,8 @@ def kFoldRandomForestRegressor(allSamples_reg: list[Sample], cv: int = 5) -> tup
     return float(np.mean(fold_mses)), float(np.std(fold_mses)), gravidade_oof
 
 
-def kFoldRandomForestClassifier(allSamples_cls: list[Sample], allSamples_reg: list[Sample],
-                                 cv: int = 5) -> tuple[float, float, np.ndarray]:
-    """K-fold do Random Forest Classifier.
-
-    Returns:
-        (mean_acc, std_acc, classe_oof).
-    """
-    y_cls = _classesForStratification(allSamples_reg)
-    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
-
-    fold_accs = []
-    classe_oof = np.zeros(len(allSamples_cls), dtype=int)
-
-    for train_idx, test_idx in skf.split(allSamples_cls, y_cls):
-        train_samples = [allSamples_cls[i] for i in train_idx]
-        test_samples = [allSamples_cls[i] for i in test_idx]
-
-        forest = RandomFlorestClassifier()
-        forest.buildFlorest(train_samples)
-        fold_accs.append(forest.testFlorest(test_samples))
-
-        for i, s in zip(test_idx, test_samples):
-            classe_oof[i] = forest.predict(s)
-
-    return float(np.mean(fold_accs)), float(np.std(fold_accs)), classe_oof
-
-
 def kFoldMLPRegressor(allSamples_reg: list[Sample], cv: int = 5) -> tuple[float, float, np.ndarray]:
-    """K-fold do MLP Regressor (Iter. 6 do desenvolvimento).
+    """K-fold do MLP Regressor
 
     Arquitetura [5, 8, 5, 3, 1]:
         - 3 camadas ocultas em funil estreito (8 → 5 → 3 neurônios)
@@ -272,36 +211,38 @@ def saveOutputCSV(filename: str, allSamples: list[Sample],
 if __name__ == "__main__":
     allSamples_reg = loadAllSamples("regressor")
     allSamples_cls = loadAllSamples("classifier")
+    y_true_cls = np.array([s.output for s in allSamples_cls], dtype=int)
 
     print(f"K-fold cross-validation (n={len(allSamples_reg)}, 5 folds estratificados)")
-    print(f"Features 5D: [qPA, pulso, resp, |pulso-80|, qPA²]")
-    print("=" * 70)
+    print(f"Features: [qPA, pulso, resp, |pulso-80|, qPA²]")
+    print("=" * 80)
 
-    # Decision Tree — regressor + classificador
+    # Decision Tree — regressor; classe derivada via classe_via_regressao
     tree_mse, tree_mse_std, tree_grav = kFoldDecisionTreeRegressor(allSamples_reg, cv=5)
-    tree_acc, tree_acc_std, tree_cls = kFoldDecisionTreeClassifier(allSamples_cls, allSamples_reg, cv=5)
-    print(f"Decision Tree   MSE: {tree_mse:6.4f} ± {tree_mse_std:.4f}  "
-          f"|  Acc: {tree_acc:.4f} ± {tree_acc_std:.4f}")
+    tree_cls = classe_via_regressao(tree_grav)
+    tree_acc = float((tree_cls == y_true_cls).mean())
+    tree_f1m = float(f1_score(y_true_cls, tree_cls, average="macro"))
+    print(f"Decision Tree   MSE: {tree_mse:6.4f} ± {tree_mse_std:.4f}  |  Acc: {tree_acc:.4f}  |  F1 macro: {tree_f1m:.4f}")
     saveOutputCSV("predicoes_tree.csv", allSamples_reg, tree_grav, tree_cls)
 
-    # Random Forest — regressor + classificador
+    # Random Forest — regressor; classe derivada via classe_via_regressao
     forest_mse, forest_mse_std, forest_grav = kFoldRandomForestRegressor(allSamples_reg, cv=5)
-    forest_acc, forest_acc_std, forest_cls = kFoldRandomForestClassifier(allSamples_cls, allSamples_reg, cv=5)
-    print(f"Random Forest   MSE: {forest_mse:6.4f} ± {forest_mse_std:.4f}  "
-          f"|  Acc: {forest_acc:.4f} ± {forest_acc_std:.4f}")
+    forest_cls = classe_via_regressao(forest_grav)
+    forest_acc = float((forest_cls == y_true_cls).mean())
+    forest_f1m = float(f1_score(y_true_cls, forest_cls, average="macro"))
+    print(f"Random Forest   MSE: {forest_mse:6.4f} ± {forest_mse_std:.4f}  |  Acc: {forest_acc:.4f}  |  F1 macro: {forest_f1m:.4f}")
     saveOutputCSV("predicoes_forest.csv", allSamples_reg, forest_grav, forest_cls)
 
-    # MLP — só regressor; classe vem de classe_via_regressao (Iter. 6 do desenvolvimento)
+    # MLP — regressor; classe derivada via classe_via_regressao
     mlp_mse, mlp_mse_std, mlp_grav = kFoldMLPRegressor(allSamples_reg, cv=5)
     mlp_cls = classe_via_regressao(mlp_grav)
-    y_true_cls = np.array([s.output for s in allSamples_cls], dtype=int)
     mlp_acc = float((mlp_cls == y_true_cls).mean())
-    print(f"MLP             MSE: {mlp_mse:6.4f} ± {mlp_mse_std:.4f}  "
-          f"|  Acc: {mlp_acc:.4f}  (classe via threshold 25/50/75)")
+    mlp_f1m = float(f1_score(y_true_cls, mlp_cls, average="macro"))
+    print(f"MLP             MSE: {mlp_mse:6.4f} ± {mlp_mse_std:.4f}  |  Acc: {mlp_acc:.4f}  |  F1 macro: {mlp_f1m:.4f}")
     saveOutputCSV("predicoes_mlp.csv", allSamples_reg, mlp_grav, mlp_cls)
 
     print()
     print("Arquivos gerados:")
-    print("  predicoes_tree.csv    (Decision Tree Regressor + Classifier)")
-    print("  predicoes_forest.csv  (Random Forest Regressor + Classifier)")
-    print("  predicoes_mlp.csv     (MLP Regressor + threshold)")
+    print("  predicoes_tree.csv")
+    print("  predicoes_forest.csv")
+    print("  predicoes_mlp.csv")
